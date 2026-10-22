@@ -1,6 +1,6 @@
 # Stock Bar
 
-A Cinnamon panel applet. Each ticker shows the symbol, today's percent change, and a small line of the last five daily closes. Click a ticker for the price, day range, five-day move, and a link to Yahoo Finance.
+A Cinnamon panel applet. Each ticker shows the symbol with the last price underneath, the day's change above today's percent, and a small line of the last five daily closes. Click a ticker for the company name, day range, five-day move, and a link to Yahoo Finance.
 
 Quotes come from Yahoo's chart endpoint, the same numbers that draw the sparkline. The request goes out through `curl`, with a browser TLS fingerprint, a Firefox User-Agent, and the cookie plus crumb used by the Yahoo Finance Quotes desklet. There is no API key. The cookie jar and crumb are cached in `~/.cache/stockbar@stockbar/`. Yahoo can still change or rate-limit the endpoint. The applet keeps the last good quote when a request fails. `/usr/bin/curl` is required.
 

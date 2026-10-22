@@ -3,11 +3,27 @@
 }
 
 .stockbar-ticker {
-    spacing: 4px;
+    spacing: 8px;
+}
+
+.stockbar-col {
+    spacing: 0px;
 }
 
 .stockbar-symbol {
     font-weight: bold;
+    font-size: 9pt;
+}
+
+.stockbar-price,
+.stockbar-change,
+.stockbar-percent {
+    font-size: 9pt;
+}
+
+.stockbar-change,
+.stockbar-percent {
+    text-align: right;
 }
 
 .stockbar-up {

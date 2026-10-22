@@ -407,13 +407,21 @@ class StockBarApplet extends Applet.Applet {
             track_hover: true
         });
         const symbolLabel = new St.Label({ text: symbol, style_class: "stockbar-symbol" });
-        const percentLabel = new St.Label({ text: "—", style_class: "stockbar-flat" });
+        const priceLabel = new St.Label({ text: "—", style_class: "stockbar-price" });
+        const changeLabel = new St.Label({ text: "—", style_class: "stockbar-change stockbar-flat" });
+        const percentLabel = new St.Label({ text: "—", style_class: "stockbar-percent stockbar-flat" });
         const spark = new St.DrawingArea({
             style_class: "stockbar-spark stockbar-spark-flat",
             reactive: false
         });
-        box.add(symbolLabel, { y_align: St.Align.MIDDLE, y_fill: false });
-        box.add(percentLabel, { y_align: St.Align.MIDDLE, y_fill: false });
+        const nameCol = new St.BoxLayout({ vertical: true, style_class: "stockbar-col" });
+        const moveCol = new St.BoxLayout({ vertical: true, style_class: "stockbar-col" });
+        nameCol.add(symbolLabel, { x_align: St.Align.START, x_fill: false });
+        nameCol.add(priceLabel, { x_align: St.Align.START, x_fill: false });
+        moveCol.add(changeLabel, { x_align: St.Align.END, x_fill: false, x_expand: true });
+        moveCol.add(percentLabel, { x_align: St.Align.END, x_fill: false, x_expand: true });
+        box.add(nameCol, { y_align: St.Align.MIDDLE, y_fill: false });
+        box.add(moveCol, { y_align: St.Align.MIDDLE, y_fill: false });
         box.add(spark, { y_align: St.Align.MIDDLE, y_fill: false, x_fill: false });
         this.actor.add(box, { y_align: St.Align.MIDDLE });
 
@@ -421,6 +429,8 @@ class StockBarApplet extends Applet.Applet {
             symbol: symbol,
             box: box,
             symbolLabel: symbolLabel,
+            priceLabel: priceLabel,
+            changeLabel: changeLabel,
             percentLabel: percentLabel,
             spark: spark,
             tooltip: new Tooltips.PanelItemTooltip({ actor: box, _applet: this }, symbol, this._orientation),
@@ -462,13 +472,21 @@ class StockBarApplet extends Applet.Applet {
         const quote = state && state.parsed && state.parsed.ok ? state.parsed : null;
         row.symbolLabel.set_text(symbol);
         if (!quote) {
+            row.priceLabel.set_text("—");
+            row.changeLabel.set_text("—");
             row.percentLabel.set_text("—");
+            this._setDirectionClass(row.changeLabel, "stockbar-", "flat");
             this._setDirectionClass(row.percentLabel, "stockbar-", "flat");
             row.closes = [];
             row.sparkDirection = "flat";
         } else {
+            const direction = Quote.percentDirection(quote.changePercent);
+            const signed = formatSigned(quote.change, quote.priceHint);
+            row.priceLabel.set_text(Quote.formatPrice(quote.price, quote.priceHint));
+            row.changeLabel.set_text(signed || "—");
             row.percentLabel.set_text(Quote.formatPercent(quote.changePercent));
-            this._setDirectionClass(row.percentLabel, "stockbar-", Quote.percentDirection(quote.changePercent));
+            this._setDirectionClass(row.changeLabel, "stockbar-", direction);
+            this._setDirectionClass(row.percentLabel, "stockbar-", direction);
             row.closes = quote.closes;
             row.sparkDirection = Quote.seriesDirection(quote.closes);
         }
