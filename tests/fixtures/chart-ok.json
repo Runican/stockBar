@@ -1,0 +1,28 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "symbol": "AAPL",
+          "longName": "Apple Inc.",
+          "currency": "USD",
+          "regularMarketPrice": 345.71,
+          "priceHint": 2,
+          "regularMarketChangePercent": 0.5,
+          "fulldayChange": 1.72,
+          "regularMarketDayHigh": 347.28,
+          "regularMarketDayLow": 342.28,
+          "chartPreviousClose": 100
+        },
+        "indicators": {
+          "quote": [
+            {
+              "close": [343.46, null, 339.5, 343.99, 345.71]
+            }
+          ]
+        }
+      }
+    ],
+    "error": null
+  }
+}

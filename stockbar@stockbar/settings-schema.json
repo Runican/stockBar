@@ -1,0 +1,18 @@
+{
+    "symbols": {
+        "type": "entry",
+        "default": "AAPL,MSFT",
+        "description": "Ticker symbols, separated by commas",
+        "tooltip": "Up to six symbols, for example AAPL, MSFT, MC.PA. Only the first six are shown."
+    },
+    "refresh-interval": {
+        "type": "spinbutton",
+        "default": 5,
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "units": "minutes",
+        "description": "Refresh interval",
+        "tooltip": "How often to ask Yahoo for new prices. A rate limit waits at least 10 minutes."
+    }
+}

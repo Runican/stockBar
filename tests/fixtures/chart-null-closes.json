@@ -1,0 +1,22 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "symbol": "ZZZZ",
+          "shortName": "No Closes",
+          "currency": "USD",
+          "regularMarketPrice": 1,
+          "regularMarketChangePercent": 0
+        },
+        "indicators": {
+          "quote": [
+            {
+              "close": [null, null, null]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

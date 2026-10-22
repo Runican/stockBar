@@ -1,0 +1,27 @@
+.stockbar-row {
+    spacing: 12px;
+}
+
+.stockbar-ticker {
+    spacing: 4px;
+}
+
+.stockbar-symbol {
+    font-weight: bold;
+}
+
+.stockbar-up {
+    color: #3DDC97;
+}
+
+.stockbar-down {
+    color: #FF6B81;
+}
+
+.stockbar-spark-up {
+    -spark-color: #3DDC97;
+}
+
+.stockbar-spark-down {
+    -spark-color: #FF6B81;
+}

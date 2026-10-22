@@ -1,0 +1,8 @@
+{
+    "uuid": "stockbar@stockbar",
+    "name": "Stock Bar",
+    "description": "Symbols, today's move, and a five-day sparkline from Yahoo Finance",
+    "icon": "cs-applets",
+    "max-instances": 1,
+    "version": "1.0.0"
+}
