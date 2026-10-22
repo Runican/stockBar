@@ -45,7 +45,7 @@ function findRoot() {
 function loadQuote(root) {
     const path = GLib.build_filenamev([root, "stockbar@stockbar", "quote.js"]);
     const src = readText(path);
-    const load = new Function(src + "\nreturn { parseChart, sparklinePoints, formatPercent, formatPrice, parseSymbolList, extraSymbolCount, percentDirection, seriesDirection, fiveDayPercent, rateLimitNotice };");
+    const load = new Function(src + "\nreturn { parseChart, sparklinePoints, formatPercent, formatPrice, parseSymbolList, extraSymbolCount, percentDirection, seriesDirection, fiveDayPercent, rateLimitNotice, splitCurlStatus, cookieValue, hasSessionCookie, normalizeCrumb, consentFields, chartUrl };");
     return load();
 }
 
@@ -110,6 +110,28 @@ check("extras are counted", quote.extraSymbolCount(eight) === 2);
 check("an empty list has no extras", quote.extraSymbolCount(" , ") === 0 && quote.parseSymbolList("").length === 0);
 check("a kept quote says the last update is still showing", quote.rateLimitNotice(true) === "Yahoo rate-limited the request. Showing the last update.");
 check("a rate limit with no quote does not claim an update is showing", quote.rateLimitNotice(false) === "Yahoo rate-limited the request.");
+
+const curled = quote.splitCurlStatus('{"ok":true}HTTP_CODE=200');
+check("curl status splits the body from the trailing code", curled.body === '{"ok":true}' && curled.status === 200);
+check("a missing curl status is zero", quote.splitCurlStatus("no marker").status === 0);
+
+const jar = "# Netscape HTTP Cookie File\n#HttpOnly_.yahoo.com\tTRUE\t/\tTRUE\t0\tA1\tsession-token\n.yahoo.com\tTRUE\t/\tFALSE\t0\tGUCS\tyes\n";
+check("an HttpOnly cookie is readable", quote.cookieValue(jar, "A1") === "session-token");
+check("a normal cookie is readable", quote.cookieValue(jar, "GUCS") === "yes");
+check("a missing cookie is null", quote.cookieValue(jar, "B") === null);
+check("A1 counts as a Yahoo session", quote.hasSessionCookie(jar) === true);
+check("A3 counts as a Yahoo session", quote.hasSessionCookie(".yahoo.com\tTRUE\t/\tTRUE\t0\tA3\tok\n") === true);
+check("an empty jar has no session", quote.hasSessionCookie("") === false);
+
+check("a crumb token is kept", quote.normalizeCrumb("  ab.cd12 \n") === "ab.cd12");
+check("a json error is not a crumb", quote.normalizeCrumb('{"error":"unauthorized"}') === null);
+check("whitespace is not a crumb", quote.normalizeCrumb("not a crumb") === null);
+
+const consentHtml = '<form method="post" action=""><input type="hidden" name="sessionId" value="abc"><input type="hidden" name="csrf" value="z"></form>';
+check("consent fields are encoded and rejected", quote.consentFields(consentHtml) === "sessionId=abc&csrf=z&reject=reject");
+check("a page without a consent form has no fields", quote.consentFields("<html></html>") === null);
+
+check("the chart url carries the symbol and crumb", quote.chartUrl("BRK-B", "a/b") === "https://query1.finance.yahoo.com/v8/finance/chart/BRK-B?interval=1d&range=5d&crumb=a%2Fb");
 
 if (failures.length) {
     print(failures.length + " failed");

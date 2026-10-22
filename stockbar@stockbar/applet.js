@@ -7,21 +7,23 @@ const Clutter = imports.gi.Clutter;
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 
-imports.gi.versions.Soup = "3.0";
-const Soup = imports.gi.Soup;
-
 const Quote = require("./quote");
 
-const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
+const CURL = "/usr/bin/curl";
 const SPARK_WIDTH = 52;
 const RATE_LIMIT_SECONDS = 10 * 60;
-
-function bytesToString(bytes) {
-    let data = bytes.get_data();
-    if (Array.isArray(data))
-        data = data[0];
-    return new TextDecoder("utf-8").decode(data);
-}
+const CURL_CIPHERS = "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256," +
+    "TLS_AES_128_CCM_SHA256,TLS_AES_128_CCM_8_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256," +
+    "ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384," +
+    "ECDHE-ECDSA-CHACHA20-POLY1305,ECDHE-RSA-CHACHA20-POLY1305,ECDHE-ECDSA-AES128-SHA256," +
+    "ECDHE-RSA-AES128-SHA256,ECDHE-ECDSA-AES128-SHA,ECDHE-RSA-AES128-SHA," +
+    "ECDHE-ECDSA-AES256-SHA384,ECDHE-RSA-AES256-SHA384,ECDHE-ECDSA-AES256-SHA," +
+    "ECDHE-RSA-AES256-SHA,AES128-GCM-SHA256,AES256-GCM-SHA384";
+const COOKIE_PAGE = "https://finance.yahoo.com/quote/%5EGSPC/options";
+const SEED_URL = "https://fc.yahoo.com";
+const CRUMB_URL = "https://query2.finance.yahoo.com/v1/test/getcrumb";
+const CONSENT_URL = "https://consent.yahoo.com/v2/collectConsent";
 
 function formatSigned(value, priceHint) {
     const number = Quote.formatPrice(value === null ? null : Math.abs(value), priceHint);
@@ -53,10 +55,11 @@ class StockBarApplet extends Applet.Applet {
         this._quotes = {};
         this._placeholder = null;
         this._lastNote = "";
-
-        this._session = new Soup.Session();
-        this._session.timeout = 15;
-        this._session.user_agent = USER_AGENT;
+        this._generation = 0;
+        this._authRetried = false;
+        this._active = [];
+        this._crumb = "";
+        this._prepareCache();
 
         this.menu = new Applet.AppletPopupMenu(this, orientation);
         this.menuManager = new PopupMenu.PopupMenuManager(this);
@@ -84,8 +87,7 @@ class StockBarApplet extends Applet.Applet {
     on_applet_removed_from_panel() {
         this._removed = true;
         this._clearTimer();
-        if (this._cancellable)
-            this._cancellable.cancel();
+        this._stopActive();
         this._clearRows();
         this.settings.finalize();
     }
@@ -107,69 +109,236 @@ class StockBarApplet extends Applet.Applet {
         return Math.max(14, height - 18);
     }
 
+    _prepareCache() {
+        this._cacheDir = GLib.build_filenamev([GLib.get_user_cache_dir(), "stockbar@stockbar"]);
+        GLib.mkdir_with_parents(this._cacheDir, 0o700);
+        this._cookieJar = GLib.build_filenamev([this._cacheDir, "cookies.txt"]);
+        this._crumbPath = GLib.build_filenamev([this._cacheDir, "crumb"]);
+        const saved = Quote.normalizeCrumb(this._readText(this._crumbPath));
+        if (saved && Quote.hasSessionCookie(this._readText(this._cookieJar)))
+            this._crumb = saved;
+    }
+
+    _readText(path) {
+        try {
+            const file = Gio.File.new_for_path(path);
+            if (!file.query_exists(null))
+                return "";
+            const [, contents] = file.load_contents(null);
+            if (contents instanceof Uint8Array)
+                return new TextDecoder("utf-8").decode(contents);
+            return imports.byteArray.toString(contents);
+        } catch (e) {
+            return "";
+        }
+    }
+
+    _writeText(path, text) {
+        try {
+            GLib.file_set_contents(path, text);
+        } catch (e) {
+            global.log("stockbar@stockbar: could not write " + path);
+        }
+    }
+
+    _stopActive() {
+        this._generation += 1;
+        if (this._cancellable)
+            this._cancellable.cancel();
+        for (let i = 0; i < this._active.length; i++) {
+            try {
+                this._active[i].force_exit();
+            } catch (e) {
+                // The process may already have exited.
+            }
+        }
+        this._active = [];
+        this._cancellable = new Gio.Cancellable();
+    }
+
     _refresh() {
         if (this._removed)
             return;
         this._clearTimer();
-        if (this._cancellable)
-            this._cancellable.cancel();
-        this._cancellable = new Gio.Cancellable();
-
+        this._stopActive();
+        const generation = this._generation;
         const symbols = Quote.parseSymbolList(this.symbols || "");
         this._ensureRows(symbols);
         this._rateLimited = false;
-        this._pending = symbols.length;
+        this._authRetried = false;
+        this._pending = 0;
         if (symbols.length === 0) {
             this._finishRefresh();
             return;
         }
-        for (let i = 0; i < symbols.length; i++)
-            this._fetch(symbols[i]);
-    }
-
-    _fetch(symbol) {
-        const uri = "https://query1.finance.yahoo.com/v8/finance/chart/" +
-            encodeURIComponent(symbol) + "?interval=1d&range=5d";
-        let message;
-        try {
-            message = Soup.Message.new("GET", uri);
-        } catch (e) {
-            this._storeFailure(symbol, String(e), false);
-            this._fetchDone();
+        if (!GLib.file_test(CURL, GLib.FileTest.IS_EXECUTABLE)) {
+            this._failAll("curl is not installed");
             return;
         }
-        message.request_headers.replace("User-Agent", USER_AGENT);
-        message.request_headers.append("Accept", "application/json");
-
-        const cancellable = this._cancellable;
-        this._session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, cancellable, (session, result) => {
-            if (this._removed || cancellable !== this._cancellable)
+        this._ensureAuth(generation, (ok, error) => {
+            if (this._removed || generation !== this._generation)
                 return;
-            try {
-                const bytes = session.send_and_read_finish(result);
-                // status_code, not get_status(): 429 is outside Soup.Status and get_status() throws.
-                const code = message.status_code;
-                if (code === 429) {
-                    this._rateLimited = true;
-                    this._storeFailure(symbol, "Yahoo rate-limited the request", true);
-                } else if (code !== 200) {
-                    this._storeFailure(symbol, "HTTP " + code, false);
-                } else {
-                    const parsed = Quote.parseChart(JSON.parse(bytesToString(bytes)));
-                    if (!parsed.ok) {
+            if (!ok) {
+                this._failAll(error || "Could not sign in to Yahoo");
+                return;
+            }
+            this._pending = symbols.length;
+            for (let i = 0; i < symbols.length; i++)
+                this._fetchChart(symbols[i], generation);
+        });
+    }
+
+    _ensureAuth(generation, done) {
+        if (this._crumb && Quote.hasSessionCookie(this._readText(this._cookieJar))) {
+            done(true);
+            return;
+        }
+        this._crumb = "";
+        this._runCurl(generation, [SEED_URL], () => {
+            if (this._removed || generation !== this._generation)
+                return;
+            this._runCurl(generation, [
+                "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                COOKIE_PAGE
+            ], (status, body) => {
+                if (this._removed || generation !== this._generation)
+                    return;
+                if (Quote.hasSessionCookie(this._readText(this._cookieJar))) {
+                    this._fetchCrumb(generation, done);
+                    return;
+                }
+                const fields = Quote.consentFields(body);
+                if (!fields) {
+                    done(false, status ? "Yahoo did not send a session cookie (HTTP " + status + ")" : "Yahoo did not send a session cookie");
+                    return;
+                }
+                this._runCurl(generation, [
+                    "-X", "POST",
+                    "--data", fields,
+                    "-H", "Content-Type: application/x-www-form-urlencoded",
+                    "-H", "Accept: text/html,application/xhtml+xml",
+                    CONSENT_URL
+                ], () => {
+                    if (this._removed || generation !== this._generation)
+                        return;
+                    if (!Quote.hasSessionCookie(this._readText(this._cookieJar))) {
+                        done(false, "Yahoo consent did not return a session cookie");
+                        return;
+                    }
+                    this._fetchCrumb(generation, done);
+                });
+            });
+        });
+    }
+
+    _fetchCrumb(generation, done) {
+        this._runCurl(generation, ["-H", "Accept: */*", CRUMB_URL], (status, body) => {
+            if (this._removed || generation !== this._generation)
+                return;
+            const crumb = status === 200 ? Quote.normalizeCrumb(body) : null;
+            if (!crumb) {
+                done(false, "Could not get a Yahoo crumb" + (status ? " (HTTP " + status + ")" : ""));
+                return;
+            }
+            this._crumb = crumb;
+            this._writeText(this._crumbPath, crumb);
+            done(true);
+        });
+    }
+
+    _fetchChart(symbol, generation) {
+        this._runCurl(generation, [
+            "-H", "Accept: application/json",
+            Quote.chartUrl(symbol, this._crumb)
+        ], (status, body) => {
+            if (this._removed || generation !== this._generation)
+                return;
+            if ((status === 401 || status === 403) && !this._authRetried) {
+                this._authRetried = true;
+                this._crumb = "";
+                this._writeText(this._crumbPath, "");
+                const next = ++this._generation;
+                this._ensureAuth(next, (ok, error) => {
+                    if (this._removed || next !== this._generation)
+                        return;
+                    if (!ok) {
+                        this._failAll(error || "Could not sign in to Yahoo");
+                        return;
+                    }
+                    const symbols = Quote.parseSymbolList(this.symbols || "");
+                    this._pending = symbols.length;
+                    for (let i = 0; i < symbols.length; i++)
+                        this._fetchChart(symbols[i], next);
+                });
+                return;
+            }
+            if (status === 429) {
+                this._rateLimited = true;
+                this._storeFailure(symbol, "Yahoo rate-limited the request", true);
+            } else if (status !== 200) {
+                this._storeFailure(symbol, status ? "HTTP " + status : "Quote request failed", false);
+            } else {
+                try {
+                    const parsed = Quote.parseChart(JSON.parse(body));
+                    if (!parsed.ok)
                         this._storeFailure(symbol, parsed.error || "No quote", false);
-                    } else {
+                    else {
                         this._quotes[symbol] = { parsed: parsed, error: null, rateLimited: false };
                         this._paintRow(symbol);
                     }
+                } catch (e) {
+                    this._storeFailure(symbol, "Quote response was not valid", false);
                 }
-            } catch (e) {
-                if (e.matches && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                    return;
-                this._storeFailure(symbol, String(e), false);
             }
             this._fetchDone();
         });
+    }
+
+    _runCurl(generation, extraArgs, callback) {
+        const argv = [
+            CURL, "-sSL",
+            "--connect-timeout", "5",
+            "-m", "15",
+            "-w", "HTTP_CODE=%{http_code}",
+            "--ciphers", CURL_CIPHERS,
+            "-A", USER_AGENT,
+            "-b", this._cookieJar,
+            "-c", this._cookieJar
+        ].concat(extraArgs);
+        let proc;
+        try {
+            proc = Gio.Subprocess.new(argv,
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        } catch (e) {
+            callback(0, "");
+            return;
+        }
+        this._active.push(proc);
+        const cancellable = this._cancellable;
+        proc.communicate_utf8_async(null, cancellable, (source, result) => {
+            const index = this._active.indexOf(proc);
+            if (index >= 0)
+                this._active.splice(index, 1);
+            if (this._removed || generation !== this._generation || cancellable !== this._cancellable)
+                return;
+            try {
+                const [, stdout] = source.communicate_utf8_finish(result);
+                const split = Quote.splitCurlStatus(stdout || "");
+                callback(split.status, split.body);
+            } catch (e) {
+                if (e.matches && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    return;
+                callback(0, "");
+            }
+        });
+    }
+
+    _failAll(message) {
+        const symbols = Quote.parseSymbolList(this.symbols || "");
+        for (let i = 0; i < symbols.length; i++)
+            this._storeFailure(symbols[i], message, false);
+        this._pending = 0;
+        this._finishRefresh();
     }
 
     _storeFailure(symbol, message, rateLimited) {

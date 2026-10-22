@@ -39,6 +39,69 @@ function rateLimitNotice(keptStale) {
         : "Yahoo rate-limited the request.";
 }
 
+function splitCurlStatus(stdout) {
+    const text = typeof stdout === "string" ? stdout : "";
+    const marker = "HTTP_CODE=";
+    const at = text.lastIndexOf(marker);
+    if (at < 0)
+        return { body: text, status: 0 };
+    const status = parseInt(text.slice(at + marker.length), 10);
+    return {
+        body: text.slice(0, at),
+        status: isFinite(status) ? status : 0
+    };
+}
+
+function hasSessionCookie(jarText) {
+    return cookieValue(jarText, "A1") !== null || cookieValue(jarText, "A3") !== null;
+}
+
+function cookieValue(jarText, name) {
+    if (typeof jarText !== "string")
+        return null;
+    const lines = jarText.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line || line.indexOf("\t") < 0)
+            continue;
+        const parts = line.split("\t");
+        if (parts.length >= 7 && parts[5] === name && parts[6])
+            return parts[6];
+    }
+    return null;
+}
+
+function normalizeCrumb(body) {
+    if (typeof body !== "string")
+        return null;
+    const crumb = body.trim();
+    if (!crumb || crumb.length > 128 || /\s/.test(crumb))
+        return null;
+    if (crumb.charAt(0) === "<" || crumb.charAt(0) === "{")
+        return null;
+    return crumb;
+}
+
+function consentFields(html) {
+    if (typeof html !== "string" || !/<form method="post"[\s\S]*action="">/.test(html))
+        return null;
+    const pattern = /<input type="hidden" name="(.*?)" value="(.*?)">/g;
+    const fields = [];
+    let match;
+    while (fields.length < 20 && (match = pattern.exec(html)) !== null)
+        fields.push(encodeURIComponent(match[1]) + "=" + encodeURIComponent(match[2]));
+    if (fields.length === 0)
+        return null;
+    fields.push("reject=reject");
+    return fields.join("&");
+}
+
+function chartUrl(symbol, crumb) {
+    return "https://query1.finance.yahoo.com/v8/finance/chart/" +
+        encodeURIComponent(symbol) +
+        "?interval=1d&range=5d&crumb=" + encodeURIComponent(crumb);
+}
+
 function parseChart(json) {
     const chart = json && json.chart;
     const result = chart && chart.result && chart.result[0];
