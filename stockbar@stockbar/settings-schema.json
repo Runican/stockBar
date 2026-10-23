@@ -3,7 +3,7 @@
         "type": "entry",
         "default": "AAPL,MSFT",
         "description": "Ticker symbols, separated by commas",
-        "tooltip": "Up to six symbols, for example AAPL, MSFT, MC.PA. Only the first six are shown."
+        "tooltip": "Up to six symbols, for example AAPL, MSFT, HSBA.L@london. A symbol without @exchange uses the USA session. Other exchanges: london, paris, frankfurt, tokyo, hongkong, toronto. Only the first six are shown."
     },
     "refresh-interval": {
         "type": "spinbutton",

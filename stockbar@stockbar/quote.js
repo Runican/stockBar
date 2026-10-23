@@ -4,33 +4,105 @@
 const MAX_SYMBOLS = 6;
 const SYMBOL_PATTERN = /^[A-Z0-9.^=-]{1,24}$/;
 const FLAT_BAND = 0.005;
+const EXCHANGES = {
+    usa: { timeZone: "America/New_York", sessions: [[9 * 60 + 30, 16 * 60]] },
+    london: { timeZone: "Europe/London", sessions: [[8 * 60, 16 * 60 + 30]] },
+    paris: { timeZone: "Europe/Paris", sessions: [[9 * 60, 17 * 60 + 30]] },
+    frankfurt: { timeZone: "Europe/Berlin", sessions: [[9 * 60, 17 * 60 + 30]] },
+    tokyo: { timeZone: "Asia/Tokyo", sessions: [[9 * 60, 11 * 60 + 30], [12 * 60 + 30, 15 * 60]] },
+    hongkong: { timeZone: "Asia/Hong_Kong", sessions: [[9 * 60 + 30, 12 * 60], [13 * 60, 16 * 60]] },
+    toronto: { timeZone: "America/Toronto", sessions: [[9 * 60 + 30, 16 * 60]] }
+};
 
 function finiteNumber(value) {
     return typeof value === "number" && isFinite(value) ? value : null;
 }
 
-function normalizedSymbols(text) {
+function normalizedTickers(text) {
     if (typeof text !== "string")
         return [];
     const seen = {};
-    const symbols = [];
-    const parts = text.toUpperCase().split(/[\s,]+/);
+    const tickers = [];
+    const parts = text.split(/[\s,]+/);
     for (let i = 0; i < parts.length; i++) {
-        const symbol = parts[i];
+        const part = parts[i];
+        if (!part)
+            continue;
+        const at = part.lastIndexOf("@");
+        let symbol;
+        let exchange = "usa";
+        if (at >= 0) {
+            symbol = part.slice(0, at).toUpperCase();
+            exchange = part.slice(at + 1).toLowerCase();
+            if (!EXCHANGES[exchange])
+                continue;
+        } else {
+            symbol = part.toUpperCase();
+        }
         if (!symbol || seen[symbol] || !SYMBOL_PATTERN.test(symbol))
             continue;
         seen[symbol] = true;
-        symbols.push(symbol);
+        tickers.push({ symbol: symbol, exchange: exchange });
     }
-    return symbols;
+    return tickers;
+}
+
+function parseTickerList(text) {
+    return normalizedTickers(text).slice(0, MAX_SYMBOLS);
 }
 
 function parseSymbolList(text) {
-    return normalizedSymbols(text).slice(0, MAX_SYMBOLS);
+    const tickers = parseTickerList(text);
+    const symbols = [];
+    for (let i = 0; i < tickers.length; i++)
+        symbols.push(tickers[i].symbol);
+    return symbols;
 }
 
 function extraSymbolCount(text) {
-    return Math.max(0, normalizedSymbols(text).length - MAX_SYMBOLS);
+    return Math.max(0, normalizedTickers(text).length - MAX_SYMBOLS);
+}
+
+function exchangeTimeZone(exchangeId) {
+    const exchange = EXCHANGES[exchangeId];
+    return exchange ? exchange.timeZone : null;
+}
+
+function isExchangeOpen(exchangeId, local) {
+    const exchange = EXCHANGES[exchangeId];
+    if (!exchange || !local)
+        return false;
+    const weekday = local.weekday;
+    const minute = local.minutes;
+    if (typeof weekday !== "number" || weekday < 1 || weekday > 5)
+        return false;
+    if (typeof minute !== "number" || !isFinite(minute))
+        return false;
+    const sessions = exchange.sessions;
+    for (let i = 0; i < sessions.length; i++) {
+        if (minute >= sessions[i][0] && minute < sessions[i][1])
+            return true;
+    }
+    return false;
+}
+
+function symbolsToRequest(tickers, localFor, fetchWhileClosed) {
+    const symbols = [];
+    if (!tickers)
+        return symbols;
+    for (let i = 0; i < tickers.length; i++) {
+        const ticker = tickers[i];
+        if (!ticker || !ticker.symbol)
+            continue;
+        if (fetchWhileClosed) {
+            symbols.push(ticker.symbol);
+            continue;
+        }
+        const local = localFor ? localFor(ticker.exchange) : null;
+        if (isExchangeOpen(ticker.exchange, local))
+            symbols.push(ticker.symbol);
+    }
+    return symbols;
 }
 
 function rateLimitNotice(keptStale) {

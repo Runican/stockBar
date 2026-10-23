@@ -69,7 +69,7 @@ class StockBarApplet extends Applet.Applet {
         this.settings.bind("symbols", "symbols", this._onSettingsChanged.bind(this));
         this.settings.bind("refresh-interval", "refresh_interval", this._onSettingsChanged.bind(this));
 
-        this._refresh();
+        this._refresh(true);
     }
 
     on_applet_clicked() {
@@ -94,7 +94,7 @@ class StockBarApplet extends Applet.Applet {
 
     _onSettingsChanged() {
         if (!this._removed)
-            this._refresh();
+            this._refresh(true);
     }
 
     _isHorizontal() {
@@ -156,18 +156,43 @@ class StockBarApplet extends Applet.Applet {
         this._cancellable = new Gio.Cancellable();
     }
 
-    _refresh() {
+    _exchangeLocal(exchangeId) {
+        const zone = Quote.exchangeTimeZone(exchangeId);
+        if (!zone)
+            return null;
+        try {
+            const now = GLib.DateTime.new_now(GLib.TimeZone.new(zone));
+            if (!now)
+                return null;
+            return {
+                weekday: now.get_day_of_week(),
+                minutes: now.get_hour() * 60 + now.get_minute()
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    _refresh(fetchWhileClosed) {
         if (this._removed)
             return;
         this._clearTimer();
         this._stopActive();
         const generation = this._generation;
-        const symbols = Quote.parseSymbolList(this.symbols || "");
+        const tickers = Quote.parseTickerList(this.symbols || "");
+        const symbols = [];
+        for (let i = 0; i < tickers.length; i++)
+            symbols.push(tickers[i].symbol);
         this._ensureRows(symbols);
         this._rateLimited = false;
         this._authRetried = false;
         this._pending = 0;
-        if (symbols.length === 0) {
+        const requested = Quote.symbolsToRequest(
+            tickers,
+            (exchangeId) => this._exchangeLocal(exchangeId),
+            fetchWhileClosed === true);
+        this._requested = requested;
+        if (requested.length === 0) {
             this._finishRefresh();
             return;
         }
@@ -182,9 +207,9 @@ class StockBarApplet extends Applet.Applet {
                 this._failAll(error || "Could not sign in to Yahoo");
                 return;
             }
-            this._pending = symbols.length;
-            for (let i = 0; i < symbols.length; i++)
-                this._fetchChart(symbols[i], generation);
+            this._pending = requested.length;
+            for (let i = 0; i < requested.length; i++)
+                this._fetchChart(requested[i], generation);
         });
     }
 
@@ -258,6 +283,7 @@ class StockBarApplet extends Applet.Applet {
                 this._crumb = "";
                 this._writeText(this._crumbPath, "");
                 const next = ++this._generation;
+                const again = (this._requested || []).slice();
                 this._ensureAuth(next, (ok, error) => {
                     if (this._removed || next !== this._generation)
                         return;
@@ -265,10 +291,9 @@ class StockBarApplet extends Applet.Applet {
                         this._failAll(error || "Could not sign in to Yahoo");
                         return;
                     }
-                    const symbols = Quote.parseSymbolList(this.symbols || "");
-                    this._pending = symbols.length;
-                    for (let i = 0; i < symbols.length; i++)
-                        this._fetchChart(symbols[i], next);
+                    this._pending = again.length;
+                    for (let i = 0; i < again.length; i++)
+                        this._fetchChart(again[i], next);
                 });
                 return;
             }
@@ -334,7 +359,7 @@ class StockBarApplet extends Applet.Applet {
     }
 
     _failAll(message) {
-        const symbols = Quote.parseSymbolList(this.symbols || "");
+        const symbols = this._requested || [];
         for (let i = 0; i < symbols.length; i++)
             this._storeFailure(symbols[i], message, false);
         this._pending = 0;
@@ -365,7 +390,7 @@ class StockBarApplet extends Applet.Applet {
         const delay = this._rateLimited ? Math.max(interval, RATE_LIMIT_SECONDS) : interval;
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, delay, () => {
             this._timer = 0;
-            this._refresh();
+            this._refresh(false);
             return GLib.SOURCE_REMOVE;
         });
     }

@@ -45,7 +45,7 @@ function findRoot() {
 function loadQuote(root) {
     const path = GLib.build_filenamev([root, "stockbar@stockbar", "quote.js"]);
     const src = readText(path);
-    const load = new Function(src + "\nreturn { parseChart, sparklinePoints, formatPercent, formatPrice, parseSymbolList, extraSymbolCount, percentDirection, seriesDirection, fiveDayPercent, rateLimitNotice, splitCurlStatus, cookieValue, hasSessionCookie, normalizeCrumb, consentFields, chartUrl };");
+    const load = new Function(src + "\nreturn { parseChart, sparklinePoints, formatPercent, formatPrice, parseSymbolList, extraSymbolCount, percentDirection, seriesDirection, fiveDayPercent, rateLimitNotice, splitCurlStatus, cookieValue, hasSessionCookie, normalizeCrumb, consentFields, chartUrl, parseTickerList: typeof parseTickerList === \"function\" ? parseTickerList : null, isExchangeOpen: typeof isExchangeOpen === \"function\" ? isExchangeOpen : null, symbolsToRequest: typeof symbolsToRequest === \"function\" ? symbolsToRequest : null, exchangeTimeZone: typeof exchangeTimeZone === \"function\" ? exchangeTimeZone : null };");
     return load();
 }
 
@@ -132,6 +132,76 @@ check("consent fields are encoded and rejected", quote.consentFields(consentHtml
 check("a page without a consent form has no fields", quote.consentFields("<html></html>") === null);
 
 check("the chart url carries the symbol and crumb", quote.chartUrl("BRK-B", "a/b") === "https://query1.finance.yahoo.com/v8/finance/chart/BRK-B?interval=1d&range=5d&crumb=a%2Fb");
+
+function clock(weekday, hour, minute) {
+    return { weekday: weekday, minutes: hour * 60 + minute };
+}
+
+function listed(text) {
+    if (typeof quote.parseTickerList !== "function")
+        return null;
+    return JSON.stringify(quote.parseTickerList(text));
+}
+
+function openAt(exchangeId, weekday, hour, minute) {
+    if (typeof quote.isExchangeOpen !== "function")
+        return null;
+    return quote.isExchangeOpen(exchangeId, clock(weekday, hour, minute));
+}
+
+check("a bare ticker uses the USA exchange", listed(" aapl ") === JSON.stringify([{ symbol: "AAPL", exchange: "usa" }]));
+check("an exchange suffix is kept separate from the Yahoo symbol", listed("hsba.l@london") === JSON.stringify([{ symbol: "HSBA.L", exchange: "london" }]));
+check("the exchange suffix is case-insensitive", listed("7203.T@TOKYO") === JSON.stringify([{ symbol: "7203.T", exchange: "tokyo" }]));
+check("an unknown exchange is skipped", listed("AAPL, AAPL@nasdaq, MSFT") === JSON.stringify([{ symbol: "AAPL", exchange: "usa" }, { symbol: "MSFT", exchange: "usa" }]));
+check("a suffix with no exchange is skipped", listed("AAPL@, @london, MSFT") === JSON.stringify([{ symbol: "MSFT", exchange: "usa" }]));
+check("the first listing of a symbol keeps its exchange", listed("AAPL@london, AAPL") === JSON.stringify([{ symbol: "AAPL", exchange: "london" }]));
+check("the symbol list drops the exchange suffix", JSON.stringify(quote.parseSymbolList("AAPL, HSBA.L@london")) === JSON.stringify(["AAPL", "HSBA.L"]));
+check("suffixed tickers count toward the six-symbol limit", quote.extraSymbolCount("A@usa,B@london,C,D,E,F,G@tokyo") === 1);
+check("only the first six suffixed tickers are kept", listed("A@usa,B@london,C@paris,D@frankfurt,E@tokyo,F@hongkong,G@toronto") === JSON.stringify([
+    { symbol: "A", exchange: "usa" },
+    { symbol: "B", exchange: "london" },
+    { symbol: "C", exchange: "paris" },
+    { symbol: "D", exchange: "frankfurt" },
+    { symbol: "E", exchange: "tokyo" },
+    { symbol: "F", exchange: "hongkong" }
+]));
+
+check("USA is open at the opening minute", openAt("usa", 1, 9, 30) === true);
+check("USA is closed one minute before the open", openAt("usa", 1, 9, 29) === false);
+check("USA is open one minute before the close", openAt("usa", 1, 15, 59) === true);
+check("USA is closed at the closing minute", openAt("usa", 1, 16, 0) === false);
+check("USA is closed on Saturday", openAt("usa", 6, 12, 0) === false);
+check("USA is closed on Sunday", openAt("usa", 7, 12, 0) === false);
+check("London is open from 08:00 through 16:29", openAt("london", 2, 8, 0) === true && openAt("london", 2, 16, 29) === true && openAt("london", 2, 16, 30) === false);
+check("Paris and Frankfurt share 09:00–17:30", openAt("paris", 3, 9, 0) === true && openAt("paris", 3, 17, 30) === false && openAt("frankfurt", 3, 17, 29) === true);
+check("Toronto matches the USA clock", openAt("toronto", 4, 9, 30) === true && openAt("toronto", 4, 16, 0) === false);
+check("Tokyo is closed for the lunch break", openAt("tokyo", 5, 11, 29) === true && openAt("tokyo", 5, 11, 30) === false && openAt("tokyo", 5, 12, 29) === false && openAt("tokyo", 5, 12, 30) === true && openAt("tokyo", 5, 15, 0) === false);
+check("Hong Kong is closed for the lunch break", openAt("hongkong", 1, 11, 59) === true && openAt("hongkong", 1, 12, 0) === false && openAt("hongkong", 1, 12, 59) === false && openAt("hongkong", 1, 13, 0) === true && openAt("hongkong", 1, 16, 0) === false);
+check("an unknown exchange is never open", openAt("nasdaq", 1, 12, 0) === false);
+check("a missing local time is closed", typeof quote.isExchangeOpen === "function" && quote.isExchangeOpen("usa", null) === false);
+
+const mixed = [
+    { symbol: "AAPL", exchange: "usa" },
+    { symbol: "HSBA.L", exchange: "london" }
+];
+function mixedClock(exchangeId) {
+    if (exchangeId === "usa")
+        return clock(6, 12, 0);
+    if (exchangeId === "london")
+        return clock(1, 9, 0);
+    return null;
+}
+function requested(tickers, localFor, fetchWhileClosed) {
+    if (typeof quote.symbolsToRequest !== "function")
+        return null;
+    return JSON.stringify(quote.symbolsToRequest(tickers, localFor, fetchWhileClosed));
+}
+
+check("a scheduled refresh requests only open exchanges", requested(mixed, mixedClock, false) === JSON.stringify(["HSBA.L"]));
+check("startup requests every ticker while the exchanges are closed", requested(mixed, mixedClock, true) === JSON.stringify(["AAPL", "HSBA.L"]));
+check("a ticker with no local time is skipped unless this is startup", requested([{ symbol: "AAPL", exchange: "usa" }], () => null, false) === JSON.stringify([]) && requested([{ symbol: "AAPL", exchange: "usa" }], () => null, true) === JSON.stringify(["AAPL"]));
+
+check("each exchange names its timezone", typeof quote.exchangeTimeZone === "function" && quote.exchangeTimeZone("usa") === "America/New_York" && quote.exchangeTimeZone("london") === "Europe/London" && quote.exchangeTimeZone("paris") === "Europe/Paris" && quote.exchangeTimeZone("frankfurt") === "Europe/Berlin" && quote.exchangeTimeZone("tokyo") === "Asia/Tokyo" && quote.exchangeTimeZone("hongkong") === "Asia/Hong_Kong" && quote.exchangeTimeZone("toronto") === "America/Toronto" && quote.exchangeTimeZone("nasdaq") === null);
 
 if (failures.length) {
     print(failures.length + " failed");
