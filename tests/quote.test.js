@@ -60,6 +60,39 @@ check("success fixture parses", parsed.ok === true);
 check("uses the long name", parsed.name === "Apple Inc.");
 check("keeps today's percent from the payload", parsed.changePercent === 0.5);
 check("does not derive today's move from chartPreviousClose", parsed.changePercent !== ((345.71 - 100) / 100) * 100);
+check("dollar change is the regular move implied by the regular percent", near(parsed.change, 345.71 * 0.005 / 1.005, 0.0001));
+
+const postMarket = {
+    chart: {
+        result: [{
+            meta: {
+                symbol: "SPCX",
+                regularMarketPrice: 144.75,
+                regularMarketChange: 3.3,
+                regularMarketChangePercent: -9.139,
+                previousClose: 141.45,
+                chartPreviousClose: 100,
+                fulldayPrice: 147.96,
+                fulldayChange: 3.3,
+                fulldayChangePercent: 2.22,
+                priceHint: 2
+            },
+            indicators: { quote: [{ close: [159.31, 144.75] }] }
+        }],
+        error: null
+    }
+};
+const postParsed = quote.parseChart(postMarket);
+check("post-market price stays the regular close", postParsed.price === 144.75);
+check("post-market percent stays the regular session percent", postParsed.changePercent === -9.139);
+check("post-market dollar change matches the regular percent", near(postParsed.change, 144.75 * (-9.139 / 100) / (1 - 9.139 / 100), 0.001));
+check("post-market dollar change is not the extended-hours move", Math.abs(postParsed.change - 3.3) > 1);
+
+delete postMarket.chart.result[0].meta.regularMarketChangePercent;
+postMarket.chart.result[0].meta.previousClose = 159.31;
+const fromPrevious = quote.parseChart(postMarket);
+check("without a regular percent the dollar change uses the previous close", near(fromPrevious.change, 144.75 - 159.31, 0.001));
+check("without a regular percent the extended-hours change is still ignored", Math.abs(fromPrevious.change - 3.3) > 1);
 check("drops null closes and keeps order", JSON.stringify(parsed.closes) === JSON.stringify([343.46, 339.5, 343.99, 345.71]));
 check("formats today's percent with a sign", quote.formatPercent(parsed.changePercent) === "+0.50%");
 check("formats the price with priceHint digits", quote.formatPrice(parsed.price, parsed.priceHint) === "345.71");

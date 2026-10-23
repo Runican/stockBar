@@ -174,6 +174,20 @@ function chartUrl(symbol, crumb) {
         "?interval=1d&range=5d&crumb=" + encodeURIComponent(crumb);
 }
 
+function regularSessionChange(meta) {
+    const price = finiteNumber(meta.regularMarketPrice);
+    const percent = finiteNumber(meta.regularMarketChangePercent);
+    if (price !== null && percent !== null) {
+        const ratio = percent / 100;
+        if (ratio !== -1)
+            return price * ratio / (1 + ratio);
+    }
+    const previous = finiteNumber(meta.previousClose);
+    if (price !== null && previous !== null)
+        return price - previous;
+    return null;
+}
+
 function parseChart(json) {
     const chart = json && json.chart;
     const result = chart && chart.result && chart.result[0];
@@ -202,7 +216,7 @@ function parseChart(json) {
         price: finiteNumber(meta.regularMarketPrice),
         priceHint: priceHint,
         changePercent: finiteNumber(meta.regularMarketChangePercent),
-        change: finiteNumber(meta.fulldayChange),
+        change: regularSessionChange(meta),
         dayHigh: finiteNumber(meta.regularMarketDayHigh),
         dayLow: finiteNumber(meta.regularMarketDayLow),
         closes: closes
