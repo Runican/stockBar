@@ -105,6 +105,28 @@ function symbolsToRequest(tickers, localFor, fetchWhileClosed) {
     return symbols;
 }
 
+function retryWhileClosed(attemptedWhileClosed, statuses) {
+    if (attemptedWhileClosed !== true || !statuses)
+        return false;
+    for (let i = 0; i < statuses.length; i++) {
+        const status = statuses[i];
+        if (typeof status !== "number" || !isFinite(status) || status <= 0)
+            return true;
+    }
+    return false;
+}
+
+function refreshDelaySeconds(intervalMinutes, rateLimited, waitingForResponse, networkBecameAvailable) {
+    const interval = Math.max(1, Number(intervalMinutes) || 5) * 60;
+    if (rateLimited)
+        return Math.max(interval, 10 * 60);
+    if (waitingForResponse && networkBecameAvailable === true)
+        return 1;
+    if (waitingForResponse)
+        return 30;
+    return interval;
+}
+
 function rateLimitNotice(keptStale) {
     return keptStale
         ? "Yahoo rate-limited the request. Showing the last update."

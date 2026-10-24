@@ -45,7 +45,7 @@ function findRoot() {
 function loadQuote(root) {
     const path = GLib.build_filenamev([root, "stockbar@stockbar", "quote.js"]);
     const src = readText(path);
-    const load = new Function(src + "\nreturn { parseChart, sparklinePoints, formatPercent, formatPrice, parseSymbolList, extraSymbolCount, percentDirection, seriesDirection, fiveDayPercent, rateLimitNotice, splitCurlStatus, cookieValue, hasSessionCookie, normalizeCrumb, consentFields, chartUrl, parseTickerList: typeof parseTickerList === \"function\" ? parseTickerList : null, isExchangeOpen: typeof isExchangeOpen === \"function\" ? isExchangeOpen : null, symbolsToRequest: typeof symbolsToRequest === \"function\" ? symbolsToRequest : null, exchangeTimeZone: typeof exchangeTimeZone === \"function\" ? exchangeTimeZone : null };");
+    const load = new Function(src + "\nreturn { parseChart, sparklinePoints, formatPercent, formatPrice, parseSymbolList, extraSymbolCount, percentDirection, seriesDirection, fiveDayPercent, rateLimitNotice, splitCurlStatus, cookieValue, hasSessionCookie, normalizeCrumb, consentFields, chartUrl, parseTickerList: typeof parseTickerList === \"function\" ? parseTickerList : null, isExchangeOpen: typeof isExchangeOpen === \"function\" ? isExchangeOpen : null, symbolsToRequest: typeof symbolsToRequest === \"function\" ? symbolsToRequest : null, exchangeTimeZone: typeof exchangeTimeZone === \"function\" ? exchangeTimeZone : null, retryWhileClosed: typeof retryWhileClosed === \"function\" ? retryWhileClosed : null, refreshDelaySeconds: typeof refreshDelaySeconds === \"function\" ? refreshDelaySeconds : null };");
     return load();
 }
 
@@ -235,6 +235,33 @@ check("startup requests every ticker while the exchanges are closed", requested(
 check("a ticker with no local time is skipped unless this is startup", requested([{ symbol: "AAPL", exchange: "usa" }], () => null, false) === JSON.stringify([]) && requested([{ symbol: "AAPL", exchange: "usa" }], () => null, true) === JSON.stringify(["AAPL"]));
 
 check("each exchange names its timezone", typeof quote.exchangeTimeZone === "function" && quote.exchangeTimeZone("usa") === "America/New_York" && quote.exchangeTimeZone("london") === "Europe/London" && quote.exchangeTimeZone("paris") === "Europe/Paris" && quote.exchangeTimeZone("frankfurt") === "Europe/Berlin" && quote.exchangeTimeZone("tokyo") === "Asia/Tokyo" && quote.exchangeTimeZone("hongkong") === "Asia/Hong_Kong" && quote.exchangeTimeZone("toronto") === "America/Toronto" && quote.exchangeTimeZone("nasdaq") === null);
+
+function closedRetry(attemptedWhileClosed, statuses) {
+    if (typeof quote.retryWhileClosed !== "function")
+        return null;
+    return quote.retryWhileClosed(attemptedWhileClosed, statuses);
+}
+
+function delaySeconds(intervalMinutes, rateLimited, waitingForResponse, networkBecameAvailable) {
+    if (typeof quote.refreshDelaySeconds !== "function")
+        return null;
+    return quote.refreshDelaySeconds(intervalMinutes, rateLimited, waitingForResponse, networkBecameAvailable);
+}
+
+const noResponse = quote.splitCurlStatus("HTTP_CODE=000");
+check("curl reports no HTTP response as status zero", noResponse.status === 0 && noResponse.body === "");
+check("a closed-market attempt with no HTTP response is retried", closedRetry(true, [noResponse.status]) === true);
+check("one unanswered ticker keeps the closed-market retry", closedRetry(true, [200, 0]) === true);
+check("a closed-market attempt that got HTTP statuses is not retried", closedRetry(true, [200, 429, 404]) === false);
+check("an open-session failure does not start closed-market retries", closedRetry(false, [0]) === false);
+check("a closed-market attempt that sent nothing is not retried", closedRetry(true, []) === false && closedRetry(true, null) === false);
+check("an unanswered retry waits 30 seconds", delaySeconds(5, false, true, false) === 30);
+check("a network that just became available retries in 1 second", delaySeconds(5, false, true, true) === 1);
+check("a network signal does not shorten an ordinary refresh", delaySeconds(5, false, false, true) === 300);
+check("a rate limit still waits at least 10 minutes while a response is missing", delaySeconds(5, true, true, true) === 600);
+check("a rate limit above 10 minutes keeps the configured interval", delaySeconds(60, true, false, false) === 3600);
+check("an ordinary refresh waits the configured interval", delaySeconds(5, false, false, false) === 300);
+check("a missing interval waits 5 minutes", delaySeconds(undefined, false, false, false) === 300);
 
 if (failures.length) {
     print(failures.length + " failed");

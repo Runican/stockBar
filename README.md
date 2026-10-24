@@ -4,7 +4,7 @@ A Cinnamon panel applet. Each ticker shows the symbol with the last price undern
 
 Quotes come from Yahoo's chart endpoint, the same numbers that draw the sparkline. The request goes out through `curl`, with a browser TLS fingerprint, a Firefox User-Agent, and the cookie plus crumb used by the Yahoo Finance Quotes desklet. There is no API key. The cookie jar and crumb are cached in `~/.cache/stockbar@stockbar/`. Yahoo can still change or rate-limit the endpoint. The applet keeps the last good quote when a request fails. `/usr/bin/curl` is required.
 
-The applet requests every ticker when it starts, and again when you change its configuration, including while the exchanges are closed. After that, a ticker is requested only during its exchange's regular weekday session. The opening minute is included and the closing minute is not. Holidays and half-days are treated as ordinary weekdays. Tokyo and Hong Kong are skipped during their midday break. If every watched exchange is closed, nothing is sent to Yahoo.
+The applet requests every ticker when it starts, and again when you change its configuration, including while the exchanges are closed. If that request gets no response, the applet tries again every 30 seconds until Yahoo answers, and it tries again as soon as the network becomes available. After a response, a ticker is requested only during its exchange's regular weekday session. The opening minute is included and the closing minute is not. Holidays and half-days are treated as ordinary weekdays. Tokyo and Hong Kong are skipped during their midday break. Once Yahoo has answered and every watched exchange is closed, nothing is sent to Yahoo.
 
 ## Settings
 

@@ -13,6 +13,6 @@
         "step": 1,
         "units": "minutes",
         "description": "Refresh interval",
-        "tooltip": "How often to ask Yahoo for new prices. A rate limit waits at least 10 minutes."
+        "tooltip": "How often to ask Yahoo for new prices. A rate limit waits at least 10 minutes. A request that gets no response is tried again after 30 seconds."
     }
 }

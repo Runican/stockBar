@@ -12,7 +12,6 @@ const Quote = require("./quote");
 const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0";
 const CURL = "/usr/bin/curl";
 const SPARK_WIDTH = 52;
-const RATE_LIMIT_SECONDS = 10 * 60;
 const CURL_CIPHERS = "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256," +
     "TLS_AES_128_CCM_SHA256,TLS_AES_128_CCM_8_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256," +
     "ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384," +
@@ -59,6 +58,13 @@ class StockBarApplet extends Applet.Applet {
         this._authRetried = false;
         this._active = [];
         this._crumb = "";
+        this._attemptedWhileClosed = false;
+        this._attemptStatuses = [];
+        this._waitingForResponse = false;
+        this._refreshOnIdle = false;
+        this._networkTimer = 0;
+        this._networkMonitor = null;
+        this._networkSignal = 0;
         this._prepareCache();
 
         this.menu = new Applet.AppletPopupMenu(this, orientation);
@@ -69,6 +75,7 @@ class StockBarApplet extends Applet.Applet {
         this.settings.bind("symbols", "symbols", this._onSettingsChanged.bind(this));
         this.settings.bind("refresh-interval", "refresh_interval", this._onSettingsChanged.bind(this));
 
+        this._watchNetwork();
         this._refresh(true);
     }
 
@@ -87,6 +94,7 @@ class StockBarApplet extends Applet.Applet {
     on_applet_removed_from_panel() {
         this._removed = true;
         this._clearTimer();
+        this._unwatchNetwork();
         this._stopActive();
         this._clearRows();
         this.settings.finalize();
@@ -187,23 +195,30 @@ class StockBarApplet extends Applet.Applet {
         this._rateLimited = false;
         this._authRetried = false;
         this._pending = 0;
+        this._refreshOnIdle = false;
+        this._attemptedWhileClosed = fetchWhileClosed === true;
+        this._attemptStatuses = [];
         const requested = Quote.symbolsToRequest(
             tickers,
             (exchangeId) => this._exchangeLocal(exchangeId),
             fetchWhileClosed === true);
         this._requested = requested;
         if (requested.length === 0) {
+            this._waitingForResponse = false;
             this._finishRefresh();
             return;
         }
         if (!GLib.file_test(CURL, GLib.FileTest.IS_EXECUTABLE)) {
+            this._waitingForResponse = false;
             this._failAll("curl is not installed");
             return;
         }
-        this._ensureAuth(generation, (ok, error) => {
+        this._waitingForResponse = this._attemptedWhileClosed;
+        this._ensureAuth(generation, (ok, error, status) => {
             if (this._removed || generation !== this._generation)
                 return;
             if (!ok) {
+                this._recordAttempt(status);
                 this._failAll(error || "Could not sign in to Yahoo");
                 return;
             }
@@ -234,7 +249,7 @@ class StockBarApplet extends Applet.Applet {
                 }
                 const fields = Quote.consentFields(body);
                 if (!fields) {
-                    done(false, status ? "Yahoo did not send a session cookie (HTTP " + status + ")" : "Yahoo did not send a session cookie");
+                    done(false, status ? "Yahoo did not send a session cookie (HTTP " + status + ")" : "Yahoo did not send a session cookie", status);
                     return;
                 }
                 this._runCurl(generation, [
@@ -243,11 +258,11 @@ class StockBarApplet extends Applet.Applet {
                     "-H", "Content-Type: application/x-www-form-urlencoded",
                     "-H", "Accept: text/html,application/xhtml+xml",
                     CONSENT_URL
-                ], () => {
+                ], (consentStatus) => {
                     if (this._removed || generation !== this._generation)
                         return;
                     if (!Quote.hasSessionCookie(this._readText(this._cookieJar))) {
-                        done(false, "Yahoo consent did not return a session cookie");
+                        done(false, "Yahoo consent did not return a session cookie", consentStatus);
                         return;
                     }
                     this._fetchCrumb(generation, done);
@@ -262,7 +277,7 @@ class StockBarApplet extends Applet.Applet {
                 return;
             const crumb = status === 200 ? Quote.normalizeCrumb(body) : null;
             if (!crumb) {
-                done(false, "Could not get a Yahoo crumb" + (status ? " (HTTP " + status + ")" : ""));
+                done(false, "Could not get a Yahoo crumb" + (status ? " (HTTP " + status + ")" : ""), status);
                 return;
             }
             this._crumb = crumb;
@@ -280,14 +295,16 @@ class StockBarApplet extends Applet.Applet {
                 return;
             if ((status === 401 || status === 403) && !this._authRetried) {
                 this._authRetried = true;
+                this._attemptStatuses = [];
                 this._crumb = "";
                 this._writeText(this._crumbPath, "");
                 const next = ++this._generation;
                 const again = (this._requested || []).slice();
-                this._ensureAuth(next, (ok, error) => {
+                this._ensureAuth(next, (ok, error, authStatus) => {
                     if (this._removed || next !== this._generation)
                         return;
                     if (!ok) {
+                        this._recordAttempt(authStatus);
                         this._failAll(error || "Could not sign in to Yahoo");
                         return;
                     }
@@ -297,6 +314,7 @@ class StockBarApplet extends Applet.Applet {
                 });
                 return;
             }
+            this._recordAttempt(status);
             if (status === 429) {
                 this._rateLimited = true;
                 this._storeFailure(symbol, "Yahoo rate-limited the request", true);
@@ -384,13 +402,69 @@ class StockBarApplet extends Applet.Applet {
             this._finishRefresh();
     }
 
+    _recordAttempt(status) {
+        const code = typeof status === "number" && isFinite(status) ? status : 0;
+        this._attemptStatuses.push(code);
+    }
+
+    _watchNetwork() {
+        try {
+            this._networkMonitor = Gio.NetworkMonitor.get_default();
+            this._networkSignal = this._networkMonitor.connect("network-changed", (monitor) => {
+                this._onNetworkChanged(monitor);
+            });
+        } catch (e) {
+            this._networkMonitor = null;
+            this._networkSignal = 0;
+        }
+    }
+
+    _unwatchNetwork() {
+        if (!this._networkMonitor || !this._networkSignal)
+            return;
+        try {
+            this._networkMonitor.disconnect(this._networkSignal);
+        } catch (e) {
+            // The monitor may already have dropped the handler.
+        }
+        this._networkSignal = 0;
+    }
+
+    _onNetworkChanged(monitor) {
+        if (this._removed || !this._waitingForResponse || !monitor)
+            return;
+        let available = false;
+        try {
+            available = monitor.get_network_available() === true;
+        } catch (e) {
+            return;
+        }
+        if (!available)
+            return;
+        if (this._active.length > 0) {
+            this._refreshOnIdle = true;
+            return;
+        }
+        if (this._networkTimer)
+            return;
+        this._networkTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+            this._networkTimer = 0;
+            if (!this._removed && this._waitingForResponse && this._active.length === 0)
+                this._refresh(true);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     _finishRefresh() {
         this._updateAppletTooltip();
-        const interval = Math.max(1, Number(this.refresh_interval) || 5) * 60;
-        const delay = this._rateLimited ? Math.max(interval, RATE_LIMIT_SECONDS) : interval;
+        const waiting = Quote.retryWhileClosed(this._attemptedWhileClosed, this._attemptStatuses);
+        this._waitingForResponse = waiting;
+        const networkReady = waiting && this._refreshOnIdle === true;
+        this._refreshOnIdle = false;
+        const delay = Quote.refreshDelaySeconds(this.refresh_interval, this._rateLimited, waiting, networkReady);
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, delay, () => {
             this._timer = 0;
-            this._refresh(false);
+            this._refresh(waiting);
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -399,6 +473,10 @@ class StockBarApplet extends Applet.Applet {
         if (this._timer) {
             GLib.source_remove(this._timer);
             this._timer = 0;
+        }
+        if (this._networkTimer) {
+            GLib.source_remove(this._networkTimer);
+            this._networkTimer = 0;
         }
     }
 
